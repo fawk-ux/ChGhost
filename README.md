@@ -25,6 +25,7 @@ ChGhost is a Windows x64 WPF educational chess overlay trainer for position anal
 | `Alt + H` | Toggle advisor mode (`StealthHumanize`, independent of `Alt + T`) |
 | `Alt + T` | Toggle pre-hint delay (`HumanPacingEnabled`) |
 | `Alt + D` | Toggle X-Ray piece labels overlay (off by default) |
+| `Alt + M` | Toggle piece recognizer (`ONNX` ↔ `Template`) live |
 | `Alt + C` | Toggle side (White / Black) |
 | `Alt + B` | Toggle Blitz / Rapid timing preset |
 | `Alt + E` | Toggle full strength / `TargetElo` |
@@ -32,13 +33,13 @@ ChGhost is a Windows x64 WPF educational chess overlay trainer for position anal
 | `Alt + G` | Hide / show overlay graphics |
 | `Alt + 4` | Select piece class for manual template fix (`Template` mode) |
 | `Alt + 5` | Reset calibration for active profile |
-| `Alt + Q` | Quit |
+| `Alt + Q` | Quit (uses `MOD_NOREPEAT`; falls back to `Alt + F4` notice if registration fails) |
 
 ## Key `settings.json` parameters
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `RecognizerMode` | `Auto` | `Auto`, `Onnx`, or `Template` |
+| `RecognizerMode` | `Auto` | `Auto`, `Onnx`, or `Template` (also toggled live via `Alt + M`) |
 | `OnnxModelPath` | `models/pieces_48x48_tiny.onnx` | ONNX piece model path |
 | `EngineExecutablePath` | `stockfish.exe` | Stockfish UCI executable |
 | `EngineThreads` | `4` | Stockfish threads in Elo mode (`FullStrength` auto-scales `ProcessorCount - 1`, `1–12`) |

@@ -171,6 +171,43 @@ public class SettingsStoreTests
         Assert.Equal(expected, settings.HumanMaxCpLoss);
     }
 
+    [Theory]
+    [InlineData("Auto", true)]
+    [InlineData("Onnx", true)]
+    [InlineData("Template", false)]
+    public void UseOnnxRecognizerReflectsRecognizerMode(string recognizerMode, bool expected)
+    {
+        var settings = AppSettings.CreateDefaults();
+        settings.RecognizerMode = recognizerMode;
+
+        Assert.Equal(expected, settings.UseOnnxRecognizer);
+    }
+
+    [Fact]
+    public void UseOnnxRecognizerTogglePersistsAcrossSaveAndLoad()
+    {
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "settings.json");
+        var store = new SettingsStore(path, new TestLogger());
+
+        var settings = store.Load();
+        Assert.True(settings.UseOnnxRecognizer);
+
+        settings.UseOnnxRecognizer = false;
+        store.Save(settings);
+
+        AppSettings reloadedTemplate = store.Load();
+        Assert.False(reloadedTemplate.UseOnnxRecognizer);
+        Assert.Equal("Template", reloadedTemplate.RecognizerMode);
+
+        reloadedTemplate.UseOnnxRecognizer = true;
+        store.Save(reloadedTemplate);
+
+        AppSettings reloadedOnnx = store.Load();
+        Assert.True(reloadedOnnx.UseOnnxRecognizer);
+        Assert.Equal("Onnx", reloadedOnnx.RecognizerMode);
+    }
+
     private sealed class TestLogger : IAppLogger
     {
         public List<string> Errors { get; } = new();

@@ -14,6 +14,13 @@ public sealed class AppSettings
     public int ScanIntervalRapidMs { get; set; } = 450;
     public int CommandTimeoutMs { get; set; } = 3500;
     public string RecognizerMode { get; set; } = "Auto";
+
+    [JsonIgnore]
+    public bool UseOnnxRecognizer
+    {
+        get => !string.Equals(RecognizerMode?.Trim(), "Template", StringComparison.OrdinalIgnoreCase);
+        set => RecognizerMode = value ? "Onnx" : "Template";
+    }
     public string OnnxModelPath { get; set; } = "models/pieces_48x48_tiny.onnx";
     public string EngineExecutablePath { get; set; } = "stockfish.exe";
     public int EngineIdleUnloadSeconds { get; set; } = 90;

@@ -16,6 +16,7 @@ public static class Win32Interop
     public const int WmHotkey = 0x0312;
     public const uint ModAlt = 0x0001;
     public const uint ModNoRepeat = 0x4000;
+    public const uint MOD_NOREPEAT = ModNoRepeat;
     public const int VkLButton = 0x01;
     private const int SM_XVIRTUALSCREEN = 76;
     private const int SM_YVIRTUALSCREEN = 77;

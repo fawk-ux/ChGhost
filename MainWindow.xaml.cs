@@ -39,7 +39,9 @@ namespace ChGhost
         private readonly CancellationTokenSource _appLifetimeCts = new();
         private readonly Random _rng = new();
         private int _activeProfile = 1;
-        private readonly IBoardRecognizer _recognizer;
+        private readonly TemplateRecognizer _templateRecognizer = new();
+        private OnnxBoardRecognizer? _onnxRecognizer;
+        private bool _useOnnxActive;
         private readonly IBoardDetector _boardDetector = new ManualBoardDetector();
         private readonly AutoBoardDetector _autoBoardDetector;
         private readonly GameStateTracker _gameStateTracker = new();
@@ -75,7 +77,9 @@ namespace ChGhost
         private long _stateVersion;
         private bool _shutdownStarted;
         private bool _readyToClose;
+        private bool _exitRequested;
         private Task? _activeScanTask;
+        private Task? _activeCalibrationTask;
         private CancellationTokenSource? _scanCts;
         private int _rescanRequested;
         private int _rescanForce;
@@ -106,7 +110,7 @@ namespace ChGhost
             _autoBoardDetector = new AutoBoardDetector(_logger, CaptureVirtualScreen);
             _settingsStore = new SettingsStore(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"), _logger);
             _settings = _settingsStore.Load();
-            _recognizer = CreateRecognizer();
+            _useOnnxActive = _settings.UseOnnxRecognizer && TryEnsureOnnxRecognizer(out _);
             _enginePath = ResolveEnginePath(_settings.EngineExecutablePath);
             _engine = new StockfishEngine(_enginePath, _settings, _logger);
             InitializeComponent();
@@ -122,40 +126,63 @@ namespace ChGhost
             };
         }
 
-        private IBoardRecognizer CreateRecognizer()
+        internal static (string Path, bool UsedFallback) ResolveOnnxModelPath(string configuredPath, string baseDirectory)
         {
-            if (_settings.RecognizerMode == "Template")
-                return new TemplateRecognizer();
+            string modelPath = string.IsNullOrWhiteSpace(configuredPath)
+                ? "models/pieces_48x48_tiny.onnx"
+                : configuredPath.Trim();
+            if (!System.IO.Path.IsPathRooted(modelPath))
+                modelPath = System.IO.Path.Combine(baseDirectory, modelPath);
+            modelPath = System.IO.Path.GetFullPath(modelPath);
+
+            if (File.Exists(modelPath))
+                return (modelPath, false);
+
+            string fallbackPath = System.IO.Path.GetFullPath(
+                System.IO.Path.Combine(baseDirectory, "models", "pieces_64x64.onnx"));
+            if (File.Exists(fallbackPath) && !string.Equals(modelPath, fallbackPath, StringComparison.OrdinalIgnoreCase))
+                return (fallbackPath, true);
+
+            return (modelPath, false);
+        }
+
+        private bool TryEnsureOnnxRecognizer(out string? errorReason)
+        {
+            if (_onnxRecognizer != null)
+            {
+                errorReason = null;
+                return true;
+            }
 
             try
             {
-                string modelPath = _settings.OnnxModelPath;
-                if (!System.IO.Path.IsPathRooted(modelPath))
-                    modelPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, modelPath);
-                if (!File.Exists(modelPath))
-                {
-                    string fallbackPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "models", "pieces_64x64.onnx");
-                    if (File.Exists(fallbackPath) && !string.Equals(modelPath, fallbackPath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _logger.Warn($"ONNX model not found: {modelPath}. Falling back to {fallbackPath}.");
-                        modelPath = fallbackPath;
-                    }
-                }
-                return new OnnxBoardRecognizer(modelPath, _logger);
+                var (modelPath, usedFallback) = ResolveOnnxModelPath(_settings.OnnxModelPath, AppDomain.CurrentDomain.BaseDirectory);
+                if (usedFallback)
+                    _logger.Warn($"ONNX model not found: {_settings.OnnxModelPath}. Falling back to {modelPath}.");
+
+                _onnxRecognizer = new OnnxBoardRecognizer(modelPath, _logger);
+                errorReason = null;
+                return true;
             }
             catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or InvalidOperationException or OnnxRuntimeException)
             {
                 _logger.Warn($"ONNX recognizer could not be initialized: {ex.Message}. Falling back to TemplateRecognizer.");
-                return new TemplateRecognizer();
+                errorReason = ex.Message;
+                return false;
             }
         }
 
-        private ICalibratableRecognizer? CalibratableRecognizer => _recognizer as ICalibratableRecognizer;
+        private bool IsUsingOnnxRecognizer => _useOnnxActive && _onnxRecognizer != null;
+
+        private IBoardRecognizer ActiveRecognizer =>
+            IsUsingOnnxRecognizer ? _onnxRecognizer! : _templateRecognizer;
+
+        private ICalibratableRecognizer? CalibratableRecognizer =>
+            IsUsingOnnxRecognizer ? null : _templateRecognizer;
 
         private void InvalidateOnnxCache()
         {
-            if (_recognizer is OnnxBoardRecognizer onnxRecognizer)
-                onnxRecognizer.InvalidateCache();
+            _onnxRecognizer?.InvalidateCache();
         }
 
         private string GetActiveDbFileName() => $"board_auto_v13_p{_activeProfile}.json";
@@ -206,24 +233,37 @@ namespace ChGhost
             UpdateUI();
         }
 
+        internal static (int Id, uint Key, string Name)[] GetHotkeyDefinitions() =>
+        [
+            (1, 0x31, "Alt+1"), (2, 0x32, "Alt+2"), (3, 0x33, "Alt+3"),
+            (4, 0x34, "Alt+4"), (5, 0x35, "Alt+5"), (6, 0x53, "Alt+S"),
+            (7, 0x43, "Alt+C"), (8, 0x48, "Alt+H"), (9, 0x51, "Alt+Q"),
+            (10, 0x52, "Alt+R"), (11, 0x44, "Alt+D"), (12, 0x46, "Alt+F"),
+            (13, 0x47, "Alt+G"), (14, 0x42, "Alt+B"), (15, 0x45, "Alt+E"),
+            (16, 0x50, "Alt+P"), (17, 0x54, "Alt+T"), (18, 0x4D, "Alt+M")
+        ];
+
+        internal static string BuildHotkeyRegistrationWarning(IReadOnlyList<string> failedHotkeys)
+        {
+            if (failedHotkeys.Count == 0)
+                return string.Empty;
+
+            bool exitFailed = failedHotkeys.Any(k => string.Equals(k, "Alt+Q", StringComparison.OrdinalIgnoreCase));
+            string list = string.Join(", ", failedHotkeys);
+            return exitFailed
+                ? $"Не зарегистрированы горячие клавиши: {list}. Для выхода используйте Alt+F4."
+                : $"Не зарегистрированы горячие клавиши: {list}.";
+        }
+
         private void RegisterHotKeys(IntPtr hwnd)
         {
-            (int Id, uint Key, string Name)[] hotkeys =
-            {
-                (1, 0x31, "Alt+1"), (2, 0x32, "Alt+2"), (3, 0x33, "Alt+3"),
-                (4, 0x34, "Alt+4"), (5, 0x35, "Alt+5"), (6, 0x53, "Alt+S"),
-                (7, 0x43, "Alt+C"), (8, 0x48, "Alt+H"), (9, 0x51, "Alt+Q"),
-                (10, 0x52, "Alt+R"), (11, 0x44, "Alt+D"), (12, 0x46, "Alt+F"),
-                (13, 0x47, "Alt+G"), (14, 0x42, "Alt+B"), (15, 0x45, "Alt+E"),
-                (16, 0x50, "Alt+P"), (17, 0x54, "Alt+T")
-            };
             var failed = new List<string>();
-            foreach (var hotkey in hotkeys)
+            foreach (var hotkey in GetHotkeyDefinitions())
             {
                 if (Win32Interop.TryRegisterHotKey(
                         hwnd,
                         hotkey.Id,
-                        Win32Interop.ModAlt | Win32Interop.ModNoRepeat,
+                        Win32Interop.ModAlt | Win32Interop.MOD_NOREPEAT,
                         hotkey.Key,
                         out int errorCode))
                 {
@@ -232,11 +272,15 @@ namespace ChGhost
                 }
 
                 failed.Add(hotkey.Name);
-                _logger.Warn($"RegisterHotKey failed for {hotkey.Name}; Win32 error {errorCode}.");
+                if (hotkey.Id == 9)
+                    _logger.Error($"RegisterHotKey failed for Alt+Q; Win32 error {errorCode}. Fallback: Alt+F4.");
+                else
+                    _logger.Warn($"RegisterHotKey failed for {hotkey.Name}; Win32 error {errorCode}.");
             }
 
-            if (failed.Count > 0)
-                _startupWarning = $"Не зарегистрированы горячие клавиши: {string.Join(", ", failed)}.";
+            string warning = BuildHotkeyRegistrationWarning(failed);
+            if (!string.IsNullOrEmpty(warning))
+                _startupWarning = warning;
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -294,7 +338,7 @@ namespace ChGhost
                         break;
 
                     case 3:
-                        _ = SmartAlt3ActionAsync();
+                        TrackCalibrationTask(SmartAlt3ActionAsync());
                         break;
 
                     case 4:
@@ -348,7 +392,12 @@ namespace ChGhost
                         break;
 
                     case 9:
-                        Close();
+                        if (!_exitRequested)
+                        {
+                            _exitRequested = true;
+                            _logger.Info("Exit requested via Alt+Q.");
+                            Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(CloseFromHotkey));
+                        }
                         break;
 
                     case 17:
@@ -382,7 +431,7 @@ namespace ChGhost
 
                     case 12:
                         if (CalibratableRecognizer == null || !HasValidBoardBounds())
-                            _ = TryAutoDetectBoardAsync();
+                            TrackCalibrationTask(TryAutoDetectBoardAsync());
                         else
                             ManualFixPieceAtCursor(cursor);
                         break;
@@ -417,6 +466,10 @@ namespace ChGhost
                     case 16:
                         SwitchProfile();
                         break;
+
+                    case 18:
+                        ToggleRecognizerMode();
+                        break;
                 }
                 handled = true;
             }
@@ -428,7 +481,8 @@ namespace ChGhost
             InvalidateScanState(requestRescan: _isRunning, forceCalculate: true);
             _activeProfile = (_activeProfile % PROFILE_COUNT) + 1;
             _boardDetector.Reset();
-            CalibratableRecognizer?.ResetCalibration();
+            _templateRecognizer.ResetCalibration();
+            InvalidateOnnxCache();
             ResetBoardTracking();
             ClearGraphics();
             LoadConfig();
@@ -464,7 +518,22 @@ namespace ChGhost
         }
 
         private bool HasValidSignatures() =>
-            CalibratableRecognizer?.IsReady ?? _recognizer.IsReady;
+            CalibratableRecognizer?.IsReady ?? ActiveRecognizer.IsReady;
+
+        private void TrackCalibrationTask(Task task)
+        {
+            if (task.IsCompleted)
+                return;
+
+            _activeCalibrationTask = task;
+            task.ContinueWith(
+                completed =>
+                {
+                    if (ReferenceEquals(_activeCalibrationTask, completed))
+                        Interlocked.CompareExchange(ref _activeCalibrationTask, null, completed);
+                },
+                TaskScheduler.Default);
+        }
 
         private Task<bool> TryAutoDetectBoardAsync(bool triggerScanAfter = true)
         {
@@ -497,8 +566,9 @@ namespace ChGhost
                     return false;
                 }
 
+                IBoardRecognizer recognizerSnap = ActiveRecognizer;
                 bool? detectedSide = null;
-                if (_recognizer is OnnxBoardRecognizer onnxRec)
+                if (recognizerSnap is OnnxBoardRecognizer onnxRec)
                 {
                     bool playAsBlackSnap = _playAsBlack;
                     try
@@ -570,7 +640,7 @@ namespace ChGhost
             _isCalibrating = true;
             try
             {
-                bool boardOccluded = _recognizer is OnnxBoardRecognizer onnx && !onnx.LastBoardVisible;
+                bool boardOccluded = ActiveRecognizer is OnnxBoardRecognizer onnx && !onnx.LastBoardVisible;
                 if (!HasValidBoardBounds() || boardOccluded)
                 {
                     long autoVersionSnap = Interlocked.Read(ref _stateVersion);
@@ -597,7 +667,7 @@ namespace ChGhost
                     int profileSnap = _activeProfile;
                     BoardRect? boundsSnap = _boardDetector.Detect();
 
-                    if (_recognizer is OnnxBoardRecognizer onnxRecognizer && boundsSnap is { IsValid: true } rect)
+                    if (ActiveRecognizer is OnnxBoardRecognizer onnxRecognizer && boundsSnap is { IsValid: true } rect)
                     {
                         UpdateUI("Пересчитываю позицию…");
                         bool playAsBlackSnap = _playAsBlack;
@@ -921,14 +991,31 @@ namespace ChGhost
             _ => "Фигура"
         };
 
+        internal static string FormatOverlayHeader(
+            bool playAsBlack,
+            bool isRunning,
+            bool isBlitzTurboMode,
+            bool fullStrength,
+            int targetElo,
+            bool usingOnnx)
+        {
+            string sideText = playAsBlack ? "Чёрные" : "Белые";
+            string stateText = isRunning ? "Анализ" : "Пауза";
+            string speedText = isBlitzTurboMode ? "Блиц" : "Рапид";
+            string strengthSuffix = fullStrength ? "" : $" · {targetElo}";
+            string modeText = usingOnnx ? "ONNX" : "Шаблоны";
+            return $"ChGhost · {sideText} · {stateText} · {speedText}{strengthSuffix} · {modeText}";
+        }
+
         private void UpdateUI(string? customStatus = null)
         {
-            string sideText = _playAsBlack ? "Чёрные" : "Белые";
-            string stateText = _isRunning ? "Анализ" : "Пауза";
-            string speedText = _isBlitzTurboMode ? "Блиц" : "Рапид";
-            string strengthSuffix = _settings.FullStrength ? "" : $" · {_settings.TargetElo}";
-
-            HeaderText.Text = $"ChGhost · {sideText} · {stateText} · {speedText}{strengthSuffix}";
+            HeaderText.Text = FormatOverlayHeader(
+                _playAsBlack,
+                _isRunning,
+                _isBlitzTurboMode,
+                _settings.FullStrength,
+                _settings.TargetElo,
+                IsUsingOnnxRecognizer);
             HeaderText.Foreground = _isRunning
                 ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0, 255, 136))
                 : new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 200, 60));
@@ -972,12 +1059,87 @@ namespace ChGhost
             }
         }
 
+        private void ToggleRecognizerMode()
+        {
+            if (_shutdownStarted || _isCalibrating || _isAutoDetecting)
+            {
+                UpdateUI("Дождитесь завершения калибровки.");
+                return;
+            }
+
+            if (!IsUsingOnnxRecognizer)
+            {
+                if (!TryEnsureOnnxRecognizer(out string? errorReason))
+                {
+                    _logger.Warn($"Switch to ONNX via Alt+M kept Template mode: {errorReason}");
+                    UpdateUI($"ONNX недоступен ({errorReason ?? "проверьте модель"}). Остаётся режим Шаблоны.");
+                    return;
+                }
+
+                _useOnnxActive = true;
+                _settings.UseOnnxRecognizer = true;
+                PersistRecognizerSetting();
+
+                InvalidateScanState(requestRescan: _isRunning, forceCalculate: _isRunning);
+                CancelHumanDelay();
+                ResetBoardTracking();
+                ClearGraphics();
+                InvalidateOnnxCache();
+                _logger.Info("Recognizer switched via Alt+M: ONNX.");
+                RedrawOverlay();
+                UpdateUI("Режим: ONNX · готов");
+                if (_isRunning && HasValidBoardBounds())
+                    _ = RunScanAndSuggestAsync(forceCalculate: true);
+                return;
+            }
+
+            _useOnnxActive = false;
+            _settings.UseOnnxRecognizer = false;
+            PersistRecognizerSetting();
+
+            CancelHumanDelay();
+            ResetBoardTracking();
+            ClearGraphics();
+
+            if (!_templateRecognizer.IsReady)
+            {
+                _isRunning = false;
+                _scanTimer.Stop();
+                InvalidateScanState(requestRescan: false, forceCalculate: false);
+                _logger.Info("Recognizer switched via Alt+M: Template (waiting for Alt+3 calibration).");
+                RedrawOverlay();
+                UpdateUI("Режим: Шаблоны · нажмите Alt+3 на стартовой позиции");
+                return;
+            }
+
+            InvalidateScanState(requestRescan: _isRunning, forceCalculate: _isRunning);
+            _logger.Info("Recognizer switched via Alt+M: Template (ready).");
+            RedrawOverlay();
+            UpdateUI("Режим: Шаблоны · готов");
+            if (_isRunning && HasValidBoardBounds())
+                _ = RunScanAndSuggestAsync(forceCalculate: true);
+        }
+
+        private void PersistRecognizerSetting()
+        {
+            try
+            {
+                _settingsStore.Save(_settings);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                _logger.Error("Unable to save settings after changing recognizer mode.", ex);
+                _startupWarning = "Не удалось сохранить настройки.";
+            }
+        }
+
         private void ResetAllCalibration()
         {
             InvalidateScanState();
             _isRunning = false;
             _scanTimer.Stop();
-            CalibratableRecognizer?.ResetCalibration();
+            _templateRecognizer.ResetCalibration();
+            InvalidateOnnxCache();
             _fixIndex = 0;
             _boardDetector.Reset();
             ResetBoardTracking();
@@ -991,16 +1153,17 @@ namespace ChGhost
 
         private void SaveConfig()
         {
-            ICalibratableRecognizer? calibratable = CalibratableRecognizer;
-            if (calibratable == null)
-            {
-                SaveBoardBounds();
-                return;
-            }
+            SavedConfig cfg = (!_useOnnxActive || _templateRecognizer.IsReady)
+                ? _templateRecognizer.ExportCalibration()
+                : new SavedConfig();
+            WriteProfileConfig(cfg);
+        }
+
+        private void WriteProfileConfig(SavedConfig cfg)
+        {
             string cfgPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, GetActiveDbFileName());
             try
             {
-                SavedConfig cfg = calibratable.ExportCalibration();
                 cfg.TopLeftX = _topLeft.X;
                 cfg.TopLeftY = _topLeft.Y;
                 cfg.BottomRightX = _bottomRight.X;
@@ -1011,28 +1174,6 @@ namespace ChGhost
             {
                 _logger.Error($"Unable to save profile '{cfgPath}'.", ex);
                 _startupWarning = "Не удалось сохранить профиль. Проверьте доступ к папке приложения.";
-                UpdateUI();
-            }
-        }
-
-        private void SaveBoardBounds()
-        {
-            string cfgPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, GetActiveDbFileName());
-            try
-            {
-                SavedConfig cfg = new SavedConfig
-                {
-                    TopLeftX = _topLeft.X,
-                    TopLeftY = _topLeft.Y,
-                    BottomRightX = _bottomRight.X,
-                    BottomRightY = _bottomRight.Y
-                };
-                File.WriteAllText(cfgPath, JsonSerializer.Serialize(cfg));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-            {
-                _logger.Error($"Unable to save board bounds '{cfgPath}'.", ex);
-                _startupWarning = "Не удалось сохранить границы доски. Проверьте доступ к папке приложения.";
                 UpdateUI();
             }
         }
@@ -1058,11 +1199,10 @@ namespace ChGhost
                     var cfg = JsonSerializer.Deserialize<SavedConfig>(File.ReadAllText(path));
                     if (cfg != null)
                     {
-                        if (CalibratableRecognizer is { } calibratable)
-                            calibratable.ImportCalibration(cfg);
+                        _templateRecognizer.ImportCalibration(cfg);
                         _topLeft = new Point(cfg.TopLeftX, cfg.TopLeftY);
                         _bottomRight = new Point(cfg.BottomRightX, cfg.BottomRightY);
-                        if (HasValidSignatures())
+                        if (_templateRecognizer.IsReady || (IsUsingOnnxRecognizer && HasValidBoardBounds()))
                             return;
                     }
                 }
@@ -1308,14 +1448,15 @@ namespace ChGhost
             int dirtyCount = 0;
             try
             {
+                IBoardRecognizer recognizerSnap = ActiveRecognizer;
                 BoardRecognitionResult recognition = await Task.Run(() =>
                 {
                     Bitmap bmp = CaptureBoard();
-                    return _recognizer.Recognize(bmp, playAsBlackSnap);
+                    return recognizerSnap.Recognize(bmp, playAsBlackSnap);
                 });
                 if (IsStale()) return;
 
-                if (_recognizer is OnnxBoardRecognizer onnxRecognizer)
+                if (recognizerSnap is OnnxBoardRecognizer onnxRecognizer)
                 {
                     inferMs = onnxRecognizer.LastInferenceMs;
                     dirtyCount = onnxRecognizer.LastDirtySquareCount;
@@ -1838,6 +1979,14 @@ namespace ChGhost
             OverlayCanvas.Children.Add(path);
         }
 
+        private void CloseFromHotkey()
+        {
+            if (_readyToClose || _shutdownStarted)
+                return;
+
+            Close();
+        }
+
         protected override void OnClosing(CancelEventArgs e)
         {
             if (_readyToClose)
@@ -1849,7 +1998,9 @@ namespace ChGhost
             e.Cancel = true;
             if (_shutdownStarted) return;
             _shutdownStarted = true;
+            _exitRequested = true;
 
+            _logger.Info("Shutdown started.");
             try { _scanTimer.Stop(); } catch { }
             try { UnregisterAllHotkeys(); } catch { }
             try { _scanCts?.Cancel(); } catch { }
@@ -1862,24 +2013,42 @@ namespace ChGhost
         {
             try
             {
-                var scanTask = _activeScanTask;
-                bool scanCompleted = scanTask is null;
-                if (scanTask is not null)
+                Task scanTask = _activeScanTask ?? Task.CompletedTask;
+                Task calibrationTask = _activeCalibrationTask ?? Task.CompletedTask;
+                Task pendingBackground = Task.WhenAll(scanTask, calibrationTask);
+
+                bool backgroundCompleted;
+                if (pendingBackground.IsCompleted)
+                {
+                    backgroundCompleted = true;
+                }
+                else
                 {
                     try
                     {
-                        scanCompleted = await Task.WhenAny(scanTask, Task.Delay(1500)) == scanTask;
+                        backgroundCompleted = await Task.WhenAny(pendingBackground, Task.Delay(1500)) == pendingBackground;
                     }
                     catch
                     {
-                        scanCompleted = false;
+                        backgroundCompleted = false;
                     }
                 }
-                if (!scanCompleted)
-                    _logger.Warn("Active board scan did not finish within the shutdown timeout; shared capture resources are left for the OS to reclaim on exit.");
 
-                try { if (scanCompleted) { _captureBitmap?.Dispose(); _captureBitmap = null; } } catch { }
-                try { if (scanCompleted) (_recognizer as IDisposable)?.Dispose(); } catch { }
+                if (!backgroundCompleted)
+                    _logger.Warn("Active board scan or calibration did not finish within the shutdown timeout; shared capture resources are left for the OS to reclaim on exit.");
+
+                try
+                {
+                    if (backgroundCompleted)
+                    {
+                        _captureBitmap?.Dispose();
+                        _captureBitmap = null;
+                        _onnxRecognizer?.Dispose();
+                        _onnxRecognizer = null;
+                    }
+                }
+                catch { }
+
                 try
                 {
                     if (_engine is IAsyncDisposable asyncEng)
@@ -1891,11 +2060,19 @@ namespace ChGhost
 
                 try { _scanCts?.Dispose(); } catch { }
                 try { _appLifetimeCts.Dispose(); } catch { }
+                _logger.Info("Shutdown completed.");
             }
             finally
             {
                 _readyToClose = true;
-                Close();
+                try
+                {
+                    Close();
+                }
+                finally
+                {
+                    System.Windows.Application.Current?.Shutdown();
+                }
             }
         }
 

@@ -15,14 +15,14 @@
             <StackPanel>
                 <TextBlock x:Name="HeaderText" Foreground="#00FF88"
                            FontFamily="Consolas" FontSize="14" FontWeight="Bold"
-                           Text="ChGhost · Белые · Пауза"/>
+                           Text="ChGhost · Белые · Пауза · ONNX"/>
                 <TextBlock x:Name="StatusText" Foreground="#FFFFFF"
                            FontFamily="Consolas" FontSize="13" Margin="0,4,0,6"
                            Text="Alt+F автопоиск доски · или Alt+1 (верх-лево) и Alt+2 (низ-право)"/>
                 <Border Height="1" Background="#33FFFFFF" Margin="0,2,0,6"/>
                 <TextBlock x:Name="HotkeysText" Foreground="#99AAB5"
                            FontFamily="Consolas" FontSize="11"
-                           Text="Alt+F автопоиск · Alt+1/2 углы · Alt+3 старт · Alt+S старт/пауза · Alt+R ход&#x0a;Alt+H советник · Alt+T задержка · Alt+D метки · Alt+Q выход"/>
+                           Text="Alt+F автопоиск · Alt+1/2 углы · Alt+3 старт · Alt+S старт/пауза · Alt+R ход&#x0a;Alt+M ONNX/шаблоны · Alt+H советник · Alt+T задержка · Alt+D метки · Alt+Q выход"/>
             </StackPanel>
         </Border>
     </Canvas>
