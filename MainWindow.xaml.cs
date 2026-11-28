@@ -333,6 +333,11 @@ namespace ChGhost
                             _startupWarning = "Не удалось сохранить настройки.";
                         }
                         _logger.Info($"StealthHumanize={_settings.StealthHumanize}");
+                        if (!_settings.StealthHumanize)
+                        {
+                            _advisorMoves.Clear();
+                            RedrawOverlayIfNeeded(_lastStableFullFen);
+                        }
                         UpdateUI($"Режим подсказок: {(_settings.StealthHumanize ? "вкл." : "выкл.")}");
                         InvalidateScanState(requestRescan: _isRunning, forceCalculate: true);
                         break;
@@ -1313,6 +1318,11 @@ namespace ChGhost
                             _logger.Info("Board is occluded; pausing board scans.");
                             _lastBoardVisible = false;
                         }
+                        _lastBestMove = "";
+                        _lastMoveRussianText = "";
+                        _lastMoveIsCastling = false;
+                        _advisorMoves.Clear();
+                        ClearGraphics();
                         UpdateUI("Доска не видна — анализ приостановлен.");
                         await MaybeUnloadIdleEngineAsync();
                         return;
@@ -1555,15 +1565,26 @@ namespace ChGhost
         {
             if (_shutdownStarted)
                 return Task.CompletedTask;
+            if (_isScanning)
+            {
+                Interlocked.Exchange(ref _rescanRequested, 1);
+                if (forceCalculate)
+                    Interlocked.Exchange(ref _rescanForce, 1);
+                return _activeScanTask ?? Task.CompletedTask;
+            }
+
             Task task = ScanAndSuggestAsync(forceCalculate);
-            _activeScanTask = task;
-            task.ContinueWith(
-                _ =>
-                {
-                    if (ReferenceEquals(_activeScanTask, task))
-                        _activeScanTask = null;
-                },
-                TaskScheduler.Default);
+            if (!task.IsCompleted)
+            {
+                _activeScanTask = task;
+                task.ContinueWith(
+                    completed =>
+                    {
+                        if (ReferenceEquals(_activeScanTask, completed))
+                            Interlocked.CompareExchange(ref _activeScanTask, null, completed);
+                    },
+                    TaskScheduler.Default);
+            }
             return task;
         }
 

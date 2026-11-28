@@ -33,7 +33,11 @@ public class StockfishEngineTests
     {
         string? enginePath = FindStockfishExecutable();
         if (enginePath is null)
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("CHGHOST_REQUIRE_STOCKFISH"), "1", StringComparison.Ordinal))
+                Assert.Fail("CHGHOST_REQUIRE_STOCKFISH=1 is set, but stockfish.exe was not found.");
             return;
+        }
 
         const string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
         await using var engine = new StockfishEngine(enginePath, AppSettings.CreateDefaults(), new TestLogger());
@@ -82,6 +86,40 @@ public class StockfishEngineTests
             engine.GetBestMoveAsync(invalidFen, 100, CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentException>(() =>
             engine.GetTopMovesAsync(invalidFen, 100, 2, CancellationToken.None));
+    }
+
+    [Fact]
+    public void OrderCandidatesWithAuthoritativeBestMove_KeepsBestMoveFirstEvenWhenOtherLineHasHigherCp()
+    {
+        Assert.True(StockfishEngine.TryParseInfoPvLine("info depth 20 multipv 1 score cp 20 pv e2e4", out CandidateMove pv1));
+        Assert.True(StockfishEngine.TryParseInfoPvLine("info depth 21 multipv 2 score cp 35 pv d2d4", out CandidateMove pv2));
+
+        IReadOnlyList<CandidateMove> ordered = StockfishEngine.OrderCandidatesWithAuthoritativeBestMove(
+            "e2e4",
+            new[] { pv1, pv2 });
+
+        Assert.Equal(2, ordered.Count);
+        Assert.Equal("e2e4", ordered[0].Uci);
+        Assert.Equal(1, ordered[0].MultiPvIndex);
+        Assert.Equal("d2d4", ordered[1].Uci);
+        Assert.Equal(2, ordered[1].MultiPvIndex);
+    }
+
+    [Fact]
+    public void OrderCandidatesWithAuthoritativeBestMove_SynthesizesMissingBestMoveFirstAndPreservesAlternatives()
+    {
+        Assert.True(StockfishEngine.TryParseInfoPvLine("info depth 20 multipv 1 score cp 20 pv e2e4", out CandidateMove pv1));
+        Assert.True(StockfishEngine.TryParseInfoPvLine("info depth 21 multipv 2 score cp 35 pv d2d4", out CandidateMove pv2));
+
+        IReadOnlyList<CandidateMove> ordered = StockfishEngine.OrderCandidatesWithAuthoritativeBestMove(
+            "g1f3",
+            new[] { pv1, pv2 });
+
+        Assert.Equal(3, ordered.Count);
+        Assert.Equal("g1f3", ordered[0].Uci);
+        Assert.Equal(1, ordered[0].MultiPvIndex);
+        Assert.Equal("d2d4", ordered[1].Uci);
+        Assert.Equal("e2e4", ordered[2].Uci);
     }
 
     private static string? FindStockfishExecutable()

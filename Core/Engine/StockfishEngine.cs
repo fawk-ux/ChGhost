@@ -346,16 +346,42 @@ public sealed class StockfishEngine : IChessEngine
         if (!IsValidUciMove(bestMove))
             throw new InvalidDataException($"Invalid Stockfish bestmove: '{response}'.");
 
-        List<CandidateMove> candidates = pvCandidates.Values
-            .OrderByDescending(candidate => candidate.EffectiveCp)
-            .ThenBy(candidate => candidate.MultiPvIndex)
-            .ToList();
-        if (candidates.Count == 0
-            || candidates.All(candidate => !candidate.Uci.Equals(bestMove, StringComparison.OrdinalIgnoreCase)))
-        {
-            candidates = new List<CandidateMove> { new(bestMove, 0, false, 0, 1, 1) };
-        }
+        IReadOnlyList<CandidateMove> candidates = OrderCandidatesWithAuthoritativeBestMove(bestMove, pvCandidates.Values);
         return (bestMove, candidates);
+    }
+
+    internal static IReadOnlyList<CandidateMove> OrderCandidatesWithAuthoritativeBestMove(
+        string bestMove,
+        IEnumerable<CandidateMove> parsedCandidates)
+    {
+        if (string.IsNullOrWhiteSpace(bestMove) || bestMove == "(none)")
+            return Array.Empty<CandidateMove>();
+
+        List<CandidateMove> all = parsedCandidates?.ToList() ?? new List<CandidateMove>();
+
+        CandidateMove? matchedBest = all
+            .Where(c => c.Uci.Equals(bestMove, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(c => c.Depth)
+            .ThenByDescending(c => c.EffectiveCp)
+            .ThenBy(c => c.MultiPvIndex)
+            .FirstOrDefault();
+
+        CandidateMove primary = matchedBest is not null
+            ? matchedBest with { MultiPvIndex = 1 }
+            : new CandidateMove(bestMove, 0, false, 0, 1, 1);
+
+        var ordered = new List<CandidateMove>(Math.Max(1, all.Count)) { primary };
+        int nextMultiPv = 2;
+        foreach (CandidateMove alt in all
+            .Where(c => !c.Uci.Equals(bestMove, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(c => c.EffectiveCp)
+            .ThenByDescending(c => c.Depth)
+            .ThenBy(c => c.MultiPvIndex))
+        {
+            ordered.Add(alt with { MultiPvIndex = nextMultiPv++ });
+        }
+
+        return ordered;
     }
 
     private async Task ReadOutputAsync(Process process, ChannelWriter<string> writer)

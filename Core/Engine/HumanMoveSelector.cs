@@ -21,20 +21,29 @@ public static class HumanMoveSelector
 
         rng ??= Random.Shared;
 
+        if (!options.PacingEnabled)
+        {
+            CandidateMove primary = candidates.FirstOrDefault(c => c.MultiPvIndex == 1) ?? candidates[0];
+            IReadOnlyList<CandidateMove> fastAlternatives = Array.Empty<CandidateMove>();
+            if (options.AdvisorMode && options.AdvisorMaxArrows > 0 && candidates.Count > 1)
+            {
+                var remaining = candidates
+                    .Where(c => !c.Uci.Equals(primary.Uci, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(c => c.EffectiveCp)
+                    .ThenByDescending(c => c.Depth)
+                    .ThenBy(c => c.MultiPvIndex)
+                    .ToList();
+                fastAlternatives = BuildAdvisorAlternatives(remaining, primary, primary.EffectiveCp, options);
+            }
+            return new MoveRecommendation(primary, fastAlternatives, 0, 0.0);
+        }
+
         // Гарантируем порядок от лучшего к худшему
         var ordered = candidates.Count == 1
             ? candidates
             : candidates.OrderByDescending(c => c.EffectiveCp).ThenBy(c => c.MultiPvIndex).ToList();
 
         var best = ordered[0];
-
-        if (!options.PacingEnabled)
-        {
-            IReadOnlyList<CandidateMove> fastAlternatives = options.AdvisorMode
-                ? BuildAdvisorAlternatives(ordered, best, options)
-                : Array.Empty<CandidateMove>();
-            return new MoveRecommendation(best, fastAlternatives, 0, 0.0);
-        }
 
         // 1. Единственный кандидат или форсированный мат — играем точно и без лишней задержки
         if (ordered.Count == 1 || (best.IsMate && Math.Abs(best.MateIn) <= MateForcedThreshold))
@@ -91,7 +100,7 @@ public static class HumanMoveSelector
 
         // 4. Формируем альтернативные стрелки для режима советника (исключая выбранный ход)
         IReadOnlyList<CandidateMove> alternatives = options.AdvisorMode
-            ? BuildAdvisorAlternatives(ordered, chosen, options)
+            ? BuildAdvisorAlternatives(ordered, chosen, best.EffectiveCp, options)
             : Array.Empty<CandidateMove>();
 
         // 5. Вычисляем сложность позиции для естественного пейсинга
@@ -102,19 +111,19 @@ public static class HumanMoveSelector
     }
 
     private static IReadOnlyList<CandidateMove> BuildAdvisorAlternatives(
-        IReadOnlyList<CandidateMove> ordered,
+        IReadOnlyList<CandidateMove> candidatesToConsider,
         CandidateMove chosen,
+        int referenceEffectiveCp,
         HumanizerOptions options)
     {
-        if (options.AdvisorMaxArrows <= 0 || ordered.Count <= 1)
+        if (options.AdvisorMaxArrows <= 0 || candidatesToConsider.Count == 0)
             return Array.Empty<CandidateMove>();
 
-        int bestEffectiveCp = ordered[0].EffectiveCp;
         var alternatives = new List<CandidateMove>(options.AdvisorMaxArrows);
-        foreach (var cand in ordered)
+        foreach (var cand in candidatesToConsider)
         {
             if (cand.Uci.Equals(chosen.Uci, StringComparison.OrdinalIgnoreCase)) continue;
-            long gap = (long)bestEffectiveCp - cand.EffectiveCp;
+            long gap = (long)referenceEffectiveCp - cand.EffectiveCp;
             if (gap <= options.AdvisorMaxGapCp)
             {
                 alternatives.Add(cand);

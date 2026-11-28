@@ -214,6 +214,33 @@ public class HumanMoveSelectorTests
         Assert.DoesNotContain(rec.Alternatives, c => c.Uci == "a2a3");
     }
 
+    [Fact]
+    public void Select_PacingDisabled_WithAdvisorModeTrue_PreservesAuthoritativeBestMoveOverHigherCpAlternative()
+    {
+        Assert.True(StockfishEngine.TryParseInfoPvLine("info depth 20 multipv 1 score cp 20 pv e2e4", out CandidateMove pv1));
+        Assert.True(StockfishEngine.TryParseInfoPvLine("info depth 21 multipv 2 score cp 35 pv d2d4", out CandidateMove pv2));
+        IReadOnlyList<CandidateMove> candidates = StockfishEngine.OrderCandidatesWithAuthoritativeBestMove(
+            "e2e4",
+            new[] { pv1, pv2 });
+
+        var options = new HumanizerOptions(
+            MaxCpLoss: 45,
+            AdvisorMaxGapCp: 65,
+            AdvisorMaxArrows: 2,
+            PacingEnabled: false,
+            MinDelayMs: 200,
+            MaxDelayMs: 800,
+            AdvisorMode: true);
+
+        MoveRecommendation rec = HumanMoveSelector.Select(candidates, EmptyGrid(), options, new ThrowingRandom());
+
+        Assert.Equal("e2e4", rec.Primary.Uci);
+        Assert.Equal(1, rec.PickIndex);
+        Assert.Equal(0, rec.RecommendedDelayMs);
+        Assert.Single(rec.Alternatives);
+        Assert.Equal("d2d4", rec.Alternatives[0].Uci);
+    }
+
     private static CandidateMove Cp(string uci, int scoreCp, int multiPv)
         => new(uci, scoreCp, false, 0, 20, multiPv);
 
