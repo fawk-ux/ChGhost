@@ -1,4 +1,4 @@
-# ChGhost v2.3.0
+# ChGhost v2.3.1
 
 ChGhost is a Windows x64 WPF educational chess overlay trainer for position analysis. It captures the board region, recognizes pieces with ONNX computer vision, validates the resulting FEN, and queries Stockfish over UCI.
 
