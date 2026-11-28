@@ -115,6 +115,11 @@ namespace ChGhost
 
             ApplySpeedPreset();
             _scanTimer.Tick += (_, _) => _ = RunScanAndSuggestAsync();
+            Loaded += (_, _) =>
+            {
+                ApplyOverlayMonitorForBoard();
+                RedrawOverlay();
+            };
         }
 
         private IBoardRecognizer CreateRecognizer()
@@ -1210,18 +1215,21 @@ namespace ChGhost
 
         private System.Windows.Point ScreenToOverlayDip(Point screenPoint)
         {
-            PresentationSource? source = PresentationSource.FromVisual(this);
-            if (source?.CompositionTarget == null)
-                return new System.Windows.Point(screenPoint.X, screenPoint.Y);
+            PresentationSource? source = PresentationSource.FromVisual(OverlayCanvas);
+            if (source?.CompositionTarget != null && !source.IsDisposed)
+            {
+                try
+                {
+                    return OverlayCanvas.PointFromScreen(new System.Windows.Point(screenPoint.X, screenPoint.Y));
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
 
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            System.Drawing.Rectangle windowBounds = Win32Interop.GetWindowRectangle(hwnd);
-            int offsetX = !_overlayMonitorBounds.IsEmpty ? _overlayMonitorBounds.Left : windowBounds.Left;
-            int offsetY = !_overlayMonitorBounds.IsEmpty ? _overlayMonitorBounds.Top : windowBounds.Top;
-            var clientPoint = new System.Windows.Point(
-                screenPoint.X - offsetX,
-                screenPoint.Y - offsetY);
-            return source.CompositionTarget.TransformFromDevice.Transform(clientPoint);
+            int offsetX = !_overlayMonitorBounds.IsEmpty ? _overlayMonitorBounds.Left : 0;
+            int offsetY = !_overlayMonitorBounds.IsEmpty ? _overlayMonitorBounds.Top : 0;
+            return new System.Windows.Point(screenPoint.X - offsetX, screenPoint.Y - offsetY);
         }
 
         private (Bitmap Screen, int OffsetX, int OffsetY) CaptureVirtualScreen()
@@ -1412,7 +1420,7 @@ namespace ChGhost
                 _advisorMoves.Clear();
                 bool isAdvisorMode = _settings.StealthHumanize && _settings.ShowAdvisorArrows;
                 bool useMultiPv = (isAdvisorMode && _settings.MultiPvCount > 1)
-                    || (_settings.StealthHumanize && _settings.HumanPacingEnabled && _settings.MultiPvCount > 1);
+                    || (!_settings.FullStrength && _settings.StealthHumanize && _settings.HumanPacingEnabled && _settings.MultiPvCount > 1);
                 int requestedMultiPv = Math.Clamp(_settings.MultiPvCount, 1, 6);
                 IReadOnlyList<CandidateMove> candidates = Array.Empty<CandidateMove>();
                 string bestMove = "(none)";
@@ -1448,7 +1456,8 @@ namespace ChGhost
                             PacingEnabled: _settings.HumanPacingEnabled,
                             MinDelayMs: _isBlitzTurboMode ? _settings.HumanDelayBlitzMinMs : _settings.HumanDelayRapidMinMs,
                             MaxDelayMs: _isBlitzTurboMode ? _settings.HumanDelayBlitzMaxMs : _settings.HumanDelayRapidMaxMs,
-                            AdvisorMode: isAdvisorMode);
+                            AdvisorMode: isAdvisorMode,
+                            StrictBestMove: _settings.FullStrength);
                         MoveRecommendation rec = HumanMoveSelector.Select(candidates, stableGrid, humanizerOptions, _rng);
                         bestMove = rec.Primary.Uci;
                         pickIndex = rec.PickIndex;
@@ -1650,7 +1659,6 @@ namespace ChGhost
                             altMove,
                             advisorIndex == 0 ? advisorColor1 : advisorColor2,
                             thickness: 6.4,
-                            offsetY: 16 + advisorIndex * 16,
                             opacity: advisorOpacity,
                             highContrastOutline: true);
                         advisorIndex++;
@@ -1723,7 +1731,7 @@ namespace ChGhost
 
             if (!string.IsNullOrEmpty(rookMove))
             {
-                DrawSingleArrow(rookMove, System.Windows.Media.Color.FromArgb(205, 0, 200, 255), thickness: 5, offsetY: -10);
+                DrawSingleArrow(rookMove, System.Windows.Media.Color.FromArgb(205, 0, 200, 255), thickness: 5);
             }
         }
 
@@ -1741,8 +1749,52 @@ namespace ChGhost
             }
         }
 
-        private void DrawSingleArrow(string uciMove, System.Windows.Media.Color argbColor, double thickness, double offsetY = 0, double opacity = 1.0, bool highContrastOutline = false)
+        private static readonly SolidColorBrush ArrowOutlineBrush = CreateFrozenBrush(System.Windows.Media.Color.FromArgb(204, 0, 0, 0));
+
+        private static SolidColorBrush CreateFrozenBrush(System.Windows.Media.Color color)
         {
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            return brush;
+        }
+
+        internal static System.Windows.Point[] BuildArrowVertices(double x1, double y1, double x2, double y2, double thickness)
+        {
+            double dx = x2 - x1;
+            double dy = y2 - y1;
+            double len = Math.Sqrt(dx * dx + dy * dy);
+            if (len < 1e-3)
+                return Array.Empty<System.Windows.Point>();
+
+            double ux = dx / len;
+            double uy = dy / len;
+            double nx = -uy;
+            double ny = ux;
+
+            double halfShaft = thickness * 0.5;
+            double headLen = Math.Min(thickness * 2.6, len * 0.55);
+            double halfWing = Math.Max(halfShaft + 2.0, headLen * Math.Tan(Math.PI / 6.0));
+            double neckX = x2 - ux * headLen;
+            double neckY = y2 - uy * headLen;
+
+            return new[]
+            {
+                new System.Windows.Point(x1 + nx * halfShaft, y1 + ny * halfShaft),
+                new System.Windows.Point(neckX + nx * halfShaft, neckY + ny * halfShaft),
+                new System.Windows.Point(neckX + nx * halfWing, neckY + ny * halfWing),
+                new System.Windows.Point(x2, y2),
+                new System.Windows.Point(neckX - nx * halfWing, neckY - ny * halfWing),
+                new System.Windows.Point(neckX - nx * halfShaft, neckY - ny * halfShaft),
+                new System.Windows.Point(x1 - nx * halfShaft, y1 - ny * halfShaft)
+            };
+        }
+
+        private void DrawSingleArrow(string uciMove, System.Windows.Media.Color argbColor, double thickness, double opacity = 1.0, bool highContrastOutline = false)
+        {
+            System.Windows.Rect board = GetBoardDipRect();
+            if (board.Width <= 0 || board.Height <= 0)
+                return;
+
             int c1 = uciMove[0] - 'a';
             int r1 = 8 - (uciMove[1] - '0');
             int c2 = uciMove[2] - 'a';
@@ -1754,63 +1806,36 @@ namespace ChGhost
                 c2 = 7 - c2; r2 = 7 - r2;
             }
 
-            System.Windows.Rect board = GetBoardDipRect();
             double cellW = board.Width / 8.0;
             double cellH = board.Height / 8.0;
-            double startX = board.X;
-            double startY = board.Y;
+            double x1 = board.X + (c1 + 0.5) * cellW;
+            double y1 = board.Y + (r1 + 0.5) * cellH;
+            double x2 = board.X + (c2 + 0.5) * cellW;
+            double y2 = board.Y + (r2 + 0.5) * cellH;
 
-            double x1 = startX + (c1 + 0.5) * cellW;
-            double y1 = startY + (r1 + 0.5) * cellH + offsetY;
-            double x2 = startX + (c2 + 0.5) * cellW;
-            double y2 = startY + (r2 + 0.5) * cellH + offsetY;
+            System.Windows.Point[] vertices = BuildArrowVertices(x1, y1, x2, y2, thickness);
+            if (vertices.Length != 7)
+                return;
 
-            var brush = new SolidColorBrush(argbColor);
-            SolidColorBrush? outlineBrush = highContrastOutline
-                ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(204, 0, 0, 0))
-                : null;
-
-            if (outlineBrush != null)
+            var geometry = new StreamGeometry { FillRule = FillRule.Nonzero };
+            using (StreamGeometryContext ctx = geometry.Open())
             {
-                OverlayCanvas.Children.Add(new Line
-                {
-                    X1 = x1, Y1 = y1, X2 = x2, Y2 = y2,
-                    Stroke = outlineBrush,
-                    StrokeThickness = thickness + 3.0,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round,
-                    Opacity = opacity
-                });
+                ctx.BeginFigure(vertices[0], isFilled: true, isClosed: true);
+                for (int i = 1; i < vertices.Length; i++)
+                    ctx.LineTo(vertices[i], isStroked: true, isSmoothJoin: true);
             }
+            geometry.Freeze();
 
-            var line = new Line
+            var path = new System.Windows.Shapes.Path
             {
-                X1 = x1, Y1 = y1, X2 = x2, Y2 = y2,
-                Stroke = brush,
-                StrokeThickness = thickness,
-                StrokeStartLineCap = PenLineCap.Round,
-                StrokeEndLineCap = PenLineCap.Round,
+                Data = geometry,
+                Fill = CreateFrozenBrush(argbColor),
+                Stroke = ArrowOutlineBrush,
+                StrokeThickness = highContrastOutline ? 1.5 : 1.0,
+                StrokeLineJoin = PenLineJoin.Round,
                 Opacity = opacity
             };
-
-            double angle = Math.Atan2(y2 - y1, x2 - x1);
-            double headLen = thickness * 2.6;
-            var arrowHead = new Polygon
-            {
-                Fill = brush,
-                Stroke = outlineBrush,
-                StrokeThickness = highContrastOutline ? 1.5 : 0,
-                Points = new PointCollection
-                {
-                    new System.Windows.Point(x2, y2),
-                    new System.Windows.Point(x2 - headLen * Math.Cos(angle - Math.PI / 6), y2 - headLen * Math.Sin(angle - Math.PI / 6)),
-                    new System.Windows.Point(x2 - headLen * Math.Cos(angle + Math.PI / 6), y2 - headLen * Math.Sin(angle + Math.PI / 6))
-                },
-                Opacity = opacity
-            };
-
-            OverlayCanvas.Children.Add(line);
-            OverlayCanvas.Children.Add(arrowHead);
+            OverlayCanvas.Children.Add(path);
         }
 
         protected override void OnClosing(CancelEventArgs e)

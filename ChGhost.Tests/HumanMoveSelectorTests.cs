@@ -241,6 +241,51 @@ public class HumanMoveSelectorTests
         Assert.Equal("d2d4", rec.Alternatives[0].Uci);
     }
 
+    [Fact]
+    public void Select_StrictBestMoveWithPacingEnabled_AlwaysPicksPv1WithoutSubstitution()
+    {
+        var candidates = new[]
+        {
+            Cp("e2e4", 20, 1),
+            Cp("d2d4", 35, 2),
+            Cp("c2c4", 19, 3),
+            Cp("g1f3", 18, 4)
+        };
+        var options = new HumanizerOptions(
+            MaxCpLoss: 45,
+            AdvisorMaxGapCp: 65,
+            AdvisorMaxArrows: 2,
+            PacingEnabled: true,
+            MinDelayMs: 120,
+            MaxDelayMs: 400,
+            AdvisorMode: true,
+            StrictBestMove: true);
+
+        for (int i = 0; i < 30; i++)
+        {
+            MoveRecommendation rec = HumanMoveSelector.Select(candidates, EmptyGrid(), options, new Random(i));
+            Assert.Equal("e2e4", rec.Primary.Uci);
+            Assert.Equal(1, rec.PickIndex);
+            Assert.InRange(rec.RecommendedDelayMs, 120, 400);
+            Assert.Equal(2, rec.Alternatives.Count);
+        }
+    }
+
+    [Fact]
+    public void BuildArrowVertices_ProducesSymmetricSevenVertexClosedArrowCenteredOnEndpoints()
+    {
+        System.Windows.Point[] vertices = MainWindow.BuildArrowVertices(100, 200, 100, 100, thickness: 8);
+
+        Assert.Equal(7, vertices.Length);
+        Assert.Equal(100, vertices[3].X, precision: 6); // tip X
+        Assert.Equal(100, vertices[3].Y, precision: 6); // tip Y
+        Assert.Equal(100, (vertices[0].X + vertices[6].X) * 0.5, precision: 6); // base center X
+        Assert.Equal(200, (vertices[0].Y + vertices[6].Y) * 0.5, precision: 6); // base center Y
+        Assert.Equal(8, Math.Abs(vertices[0].X - vertices[6].X), precision: 6);  // shaft width
+        Assert.True(Math.Abs(vertices[2].X - vertices[4].X) > 8); // wing wider than shaft
+        Assert.Equal(vertices[1].Y, vertices[5].Y, precision: 6); // symmetric neck
+    }
+
     private static CandidateMove Cp(string uci, int scoreCp, int multiPv)
         => new(uci, scoreCp, false, 0, 20, multiPv);
 

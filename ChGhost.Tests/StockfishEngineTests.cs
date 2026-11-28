@@ -122,6 +122,51 @@ public class StockfishEngineTests
         Assert.Equal("e2e4", ordered[2].Uci);
     }
 
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(4, 3)]
+    [InlineData(12, 11)]
+    [InlineData(20, 12)]
+    public void BuildStartupOptionCommands_FullStrengthEnforcesMaxStrengthOptions(int processorCount, int expectedThreads)
+    {
+        AppSettings settings = AppSettings.CreateDefaults();
+        settings.FullStrength = true;
+        settings.EngineThreads = 1;
+        settings.EngineHashMb = 64;
+
+        (int threads, int hashMb, IReadOnlyList<string> commands) =
+            StockfishEngine.BuildStartupOptionCommands(settings, processorCount);
+
+        Assert.Equal(expectedThreads, threads);
+        Assert.Equal(256, hashMb);
+        Assert.Contains($"setoption name Threads value {expectedThreads}", commands);
+        Assert.Contains("setoption name Hash value 256", commands);
+        Assert.Contains("setoption name MultiPV value 1", commands);
+        Assert.Contains("setoption name UCI_LimitStrength value false", commands);
+        Assert.Contains("setoption name Skill Level value 20", commands);
+        Assert.DoesNotContain(commands, c => c.Contains("UCI_Elo", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BuildStartupOptionCommands_LimitedStrengthRespectsTargetEloAndConfiguredResources()
+    {
+        AppSettings settings = AppSettings.CreateDefaults();
+        settings.FullStrength = false;
+        settings.TargetElo = 1850;
+        settings.EngineThreads = 2;
+        settings.EngineHashMb = 64;
+
+        (int threads, int hashMb, IReadOnlyList<string> commands) =
+            StockfishEngine.BuildStartupOptionCommands(settings, processorCount: 16);
+
+        Assert.Equal(2, threads);
+        Assert.Equal(64, hashMb);
+        Assert.Contains("setoption name Threads value 2", commands);
+        Assert.Contains("setoption name Hash value 64", commands);
+        Assert.Contains("setoption name UCI_LimitStrength value true", commands);
+        Assert.Contains("setoption name UCI_Elo value 1850", commands);
+    }
+
     private static string? FindStockfishExecutable()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

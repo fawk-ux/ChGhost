@@ -224,27 +224,17 @@ public sealed class StockfishEngine : IChessEngine
             await WriteCommandAsync("uci", cancellationToken).ConfigureAwait(false);
             await WaitForLineAsync(line => line == "uciok", cancellationToken).ConfigureAwait(false);
 
-            await WriteCommandAsync($"setoption name Threads value {_settings.EffectiveEngineThreads}", cancellationToken).ConfigureAwait(false);
-            await WriteCommandAsync($"setoption name Hash value {_settings.EngineHashMb}", cancellationToken).ConfigureAwait(false);
-            await WriteCommandAsync("setoption name MultiPV value 1", cancellationToken).ConfigureAwait(false);
+            (int effectiveThreads, int effectiveHashMb, IReadOnlyList<string> startupOptions) =
+                BuildStartupOptionCommands(_settings, Environment.ProcessorCount);
+            foreach (string optionCmd in startupOptions)
+                await WriteCommandAsync(optionCmd, cancellationToken).ConfigureAwait(false);
             _currentMultiPv = 1;
-            await WriteCommandAsync("setoption name Move Overhead value 15", cancellationToken).ConfigureAwait(false);
-            if (_settings.FullStrength)
-            {
-                await WriteCommandAsync("setoption name UCI_LimitStrength value false", cancellationToken).ConfigureAwait(false);
-                await WriteCommandAsync("setoption name Skill Level value 20", cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await WriteCommandAsync("setoption name UCI_LimitStrength value true", cancellationToken).ConfigureAwait(false);
-                await WriteCommandAsync($"setoption name UCI_Elo value {_settings.TargetElo}", cancellationToken).ConfigureAwait(false);
-            }
 
             await WriteCommandAsync("ucinewgame", cancellationToken).ConfigureAwait(false);
             await WriteCommandAsync("isready", cancellationToken).ConfigureAwait(false);
             await WaitForLineAsync(line => line == "readyok", cancellationToken).ConfigureAwait(false);
             _lastUsedUtc = DateTime.UtcNow;
-            _logger.Info($"Stockfish started with {_settings.EffectiveEngineThreads} thread(s), {_settings.EngineHashMb} MB hash.");
+            _logger.Info($"Stockfish started (fullStrength={_settings.FullStrength}) with {effectiveThreads} thread(s), {effectiveHashMb} MB hash.");
         }
         catch
         {
@@ -348,6 +338,41 @@ public sealed class StockfishEngine : IChessEngine
 
         IReadOnlyList<CandidateMove> candidates = OrderCandidatesWithAuthoritativeBestMove(bestMove, pvCandidates.Values);
         return (bestMove, candidates);
+    }
+
+    internal static (int Threads, int HashMb, IReadOnlyList<string> Commands) BuildStartupOptionCommands(
+        AppSettings settings,
+        int processorCount)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        int threads = settings.FullStrength
+            ? Math.Clamp(Math.Max(1, processorCount - 1), 1, 12)
+            : settings.EffectiveEngineThreads;
+        int hashMb = settings.FullStrength
+            ? Math.Max(settings.EngineHashMb, 256)
+            : settings.EngineHashMb;
+
+        var commands = new List<string>(6)
+        {
+            $"setoption name Threads value {threads}",
+            $"setoption name Hash value {hashMb}",
+            "setoption name MultiPV value 1",
+            "setoption name Move Overhead value 15"
+        };
+
+        if (settings.FullStrength)
+        {
+            commands.Add("setoption name UCI_LimitStrength value false");
+            commands.Add("setoption name Skill Level value 20");
+        }
+        else
+        {
+            commands.Add("setoption name UCI_LimitStrength value true");
+            commands.Add($"setoption name UCI_Elo value {settings.TargetElo}");
+        }
+
+        return (threads, hashMb, commands);
     }
 
     internal static IReadOnlyList<CandidateMove> OrderCandidatesWithAuthoritativeBestMove(

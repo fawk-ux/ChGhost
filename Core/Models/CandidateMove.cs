@@ -29,7 +29,8 @@ public sealed record HumanizerOptions(
     bool PacingEnabled = true,
     int MinDelayMs = 120,
     int MaxDelayMs = 950,
-    bool AdvisorMode = true);
+    bool AdvisorMode = true,
+    bool StrictBestMove = false);
 
 public sealed record MoveRecommendation(
     CandidateMove Primary,

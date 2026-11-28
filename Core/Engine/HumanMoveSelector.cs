@@ -21,10 +21,10 @@ public static class HumanMoveSelector
 
         rng ??= Random.Shared;
 
-        if (!options.PacingEnabled)
+        if (!options.PacingEnabled || options.StrictBestMove)
         {
             CandidateMove primary = candidates.FirstOrDefault(c => c.MultiPvIndex == 1) ?? candidates[0];
-            IReadOnlyList<CandidateMove> fastAlternatives = Array.Empty<CandidateMove>();
+            IReadOnlyList<CandidateMove> strictAlternatives = Array.Empty<CandidateMove>();
             if (options.AdvisorMode && options.AdvisorMaxArrows > 0 && candidates.Count > 1)
             {
                 var remaining = candidates
@@ -33,9 +33,18 @@ public static class HumanMoveSelector
                     .ThenByDescending(c => c.Depth)
                     .ThenBy(c => c.MultiPvIndex)
                     .ToList();
-                fastAlternatives = BuildAdvisorAlternatives(remaining, primary, primary.EffectiveCp, options);
+                strictAlternatives = BuildAdvisorAlternatives(remaining, primary, primary.EffectiveCp, options);
             }
-            return new MoveRecommendation(primary, fastAlternatives, 0, 0.0);
+
+            int strictDelay = 0;
+            double strictComplexity = 0.0;
+            if (options.PacingEnabled && options.MaxDelayMs > 0)
+            {
+                strictComplexity = EstimatePositionComplexity(candidates, grid, primary);
+                strictDelay = ComputeHumanDelayMs(options, strictComplexity, rng);
+            }
+
+            return new MoveRecommendation(primary, strictAlternatives, strictDelay, strictComplexity);
         }
 
         // Гарантируем порядок от лучшего к худшему
